@@ -72,6 +72,22 @@ async function buildServer() {
   await app.register(cors, { origin: WEB_URL, credentials: true });
   await app.register(cookie);
 
+  // Preserve the raw request body so webhook signatures (Meta, Stripe) can be
+  // verified over the exact bytes received — re-serializing JSON is unreliable.
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (req, body, done) => {
+      (req as { rawBody?: string }).rawBody = body as string;
+      if (!body) return done(null, {});
+      try {
+        done(null, JSON.parse(body as string));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   app.setErrorHandler((err, _req, reply) => {
     if (err instanceof AppError) {
       return reply.status(err.status).send(problemJson(err));
@@ -646,14 +662,56 @@ async function buildServer() {
   app.post("/v1/whatsapp/webhook", async (req, reply) => {
     const appSecret = process.env.WHATSAPP_APP_SECRET;
     if (appSecret && process.env.NODE_ENV === "production") {
-      const raw = JSON.stringify(req.body);
+      const raw = (req as { rawBody?: string }).rawBody ?? JSON.stringify(req.body);
       const sig = req.headers["x-hub-signature-256"] as string | undefined;
       if (!verifyMetaSignature(raw, sig, appSecret)) {
         throw new AppError("invalid_signature", "Bad WhatsApp signature", 401);
       }
     }
 
-    const inbound = whatsapp.parseInbound(req.body);
+    const { messages: inbound, statuses } = whatsapp.parseWebhook(req.body);
+
+    // Delivery receipts: advance stored message status (sent→delivered→read, or failed).
+    const statusRank: Record<string, number> = {
+      QUEUED: 0,
+      SENT: 1,
+      DELIVERED: 2,
+      READ: 3,
+    };
+    const statusMap: Record<string, "SENT" | "DELIVERED" | "READ" | "FAILED"> = {
+      sent: "SENT",
+      delivered: "DELIVERED",
+      read: "READ",
+      failed: "FAILED",
+    };
+    for (const s of statuses) {
+      const mapped = statusMap[s.status];
+      if (!mapped) continue;
+      const existing = await prisma.message.findUnique({
+        where: { waMessageId: s.waMessageId },
+      });
+      if (!existing) continue;
+      // Never regress a status (e.g. a late "sent" after "read"); failures always apply.
+      if (
+        mapped !== "FAILED" &&
+        (statusRank[existing.status] ?? -1) >= (statusRank[mapped] ?? 0)
+      ) {
+        continue;
+      }
+      await prisma.message.update({
+        where: { id: existing.id },
+        data: {
+          status: mapped,
+          payload: {
+            ...((existing.payload ?? {}) as object),
+            ...(mapped === "FAILED"
+              ? { error: { code: s.errorCode, title: s.errorTitle } }
+              : {}),
+          },
+        },
+      });
+    }
+
     for (const msg of inbound) {
       const account = await prisma.whatsappAccount.findFirst({
         where: { phoneNumberId: msg.phoneNumberId, isActive: true },
@@ -705,7 +763,15 @@ async function buildServer() {
           status: "RECEIVED",
           waMessageId: msg.waMessageId,
           bodyText: msg.text,
-          payload: msg.raw as object,
+          mediaUrl: msg.media?.id ? `wa-media:${msg.media.id}` : undefined,
+          payload: {
+            type: msg.type,
+            ...(msg.media ? { media: msg.media } : {}),
+            ...(msg.interactive ? { interactive: msg.interactive } : {}),
+            ...(msg.location ? { location: msg.location } : {}),
+            ...(msg.contextMessageId ? { replyTo: msg.contextMessageId } : {}),
+            raw: msg.raw,
+          },
         },
       });
 

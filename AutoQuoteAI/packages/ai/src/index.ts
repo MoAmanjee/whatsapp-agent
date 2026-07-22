@@ -1,4 +1,20 @@
 import type { IndustryModule } from "@autoquoteai/industry-sdk";
+import {
+  type Llm,
+  llmExtractSlots,
+  llmComposeReply,
+} from "./llm.js";
+
+export * from "./llm.js";
+
+/** Best-effort read of slot field names from an industry's Zod slot schema. */
+function slotKeysOf(schema: unknown): string[] {
+  const def = (schema as { _def?: { shape?: unknown; typeName?: string } })?._def;
+  const shape = typeof def?.shape === "function"
+    ? (def.shape as () => Record<string, unknown>)()
+    : (def?.shape as Record<string, unknown> | undefined);
+  return shape ? Object.keys(shape) : [];
+}
 
 export type CatalogSearchResult = {
   productId: string;
@@ -35,6 +51,10 @@ export type WorkflowInput = {
   industry: IndustryModule;
   tools: SalesTools;
   requireQuoteApproval: boolean;
+  /** Optional LLM; when absent the workflow uses deterministic extraction. */
+  llm?: Llm | null;
+  /** Business name, used for LLM reply phrasing. */
+  businessName?: string;
 };
 
 export type WorkflowResult = {
@@ -62,30 +82,72 @@ export async function runQuoteSalesWorkflow(
 
   trace.push({ step: "ingest", detail: { text: input.customerText } });
 
-  // Naive slot scrape from free text (OEM-ish tokens + year)
-  const oem = input.customerText.match(/\b([A-Z0-9]{5,}(?:-?[A-Z0-9]+)+)\b/);
-  if (oem?.[1] && !slots.oemNumber) {
-    slots.oemNumber = oem[1];
-    trace.push({ step: "extract_oem", detail: oem[1] });
+  if (input.llm) {
+    // LLM-based structured extraction (prices/products are never requested).
+    try {
+      const wanted = slotKeysOf(input.industry.slotSchema);
+      const extracted = await llmExtractSlots(input.llm, {
+        customerText: input.customerText,
+        currentSlots: slots,
+        wantedSlots: wanted.length > 0 ? wanted : ["partName", "year", "make", "model", "oemNumber"],
+        industryName: input.industry.displayName,
+      });
+      trace.push({ step: "llm_extract_slots", detail: extracted });
+
+      if (extracted.outOfScope) {
+        await input.tools.escalateToHuman("llm_out_of_scope");
+        return {
+          replyText:
+            "Thanks for your message — I've passed this to a team member who'll get back to you shortly.",
+          slots,
+          action: "escalated",
+          trace,
+        };
+      }
+      for (const [k, v] of Object.entries(extracted.slots)) {
+        if (v !== null && v !== undefined && v !== "" && slots[k] === undefined) {
+          slots[k] = v;
+        }
+      }
+    } catch (err) {
+      trace.push({ step: "llm_extract_error", detail: String(err) });
+      // Fall through to regex extraction below on any LLM failure.
+    }
   }
-  const year = input.customerText.match(/\b(19|20)\d{2}\b/);
-  if (year?.[0] && !slots.year) {
-    slots.year = Number(year[0]);
-    trace.push({ step: "extract_year", detail: slots.year });
-  }
-  if (!slots.partName && input.customerText.length < 120) {
-    slots.partName = input.customerText;
+
+  if (!input.llm || Object.keys(slots).length === 0) {
+    // Deterministic fallback: OEM-ish tokens + year.
+    const oem = input.customerText.match(/\b([A-Z0-9]{5,}(?:-?[A-Z0-9]+)+)\b/);
+    if (oem?.[1] && !slots.oemNumber) {
+      slots.oemNumber = oem[1];
+      trace.push({ step: "extract_oem", detail: oem[1] });
+    }
+    const year = input.customerText.match(/\b(19|20)\d{2}\b/);
+    if (year?.[0] && !slots.year) {
+      slots.year = Number(year[0]);
+      trace.push({ step: "extract_year", detail: slots.year });
+    }
+    if (!slots.partName && input.customerText.length < 120) {
+      slots.partName = input.customerText;
+    }
   }
 
   const missing = input.industry.missingSlotPrompts(slots);
   if (missing.length > 0) {
     trace.push({ step: "collect_slots", detail: missing });
-    return {
-      replyText: missing[0] ?? "Could you share a bit more detail?",
-      slots,
-      action: "ask_clarify",
-      trace,
-    };
+    let replyText = missing[0] ?? "Could you share a bit more detail?";
+    if (input.llm && input.businessName) {
+      try {
+        replyText = await llmComposeReply(input.llm, {
+          businessName: input.businessName,
+          draft: replyText,
+          locale: input.locale,
+        });
+      } catch {
+        /* keep deterministic prompt on failure */
+      }
+    }
+    return { replyText, slots, action: "ask_clarify", trace };
   }
 
   const hints = await input.industry.enrichSearch(

@@ -27,7 +27,7 @@ import {
   searchCatalogForTenant,
 } from "@autoquoteai/core";
 import { getIndustry } from "@autoquoteai/industry-sdk";
-import { runQuoteSalesWorkflow } from "@autoquoteai/ai";
+import { runQuoteSalesWorkflow, createLlm } from "@autoquoteai/ai";
 import { createWhatsappProvider } from "@autoquoteai/whatsapp";
 import {
   formatQuoteWhatsappText,
@@ -41,6 +41,12 @@ const connection = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379"
 });
 
 const whatsapp = createWhatsappProvider();
+const llm = createLlm();
+if (llm) {
+  console.info(`[worker] LLM enabled: ${llm.provider}`);
+} else {
+  console.info("[worker] LLM disabled — using deterministic extraction");
+}
 
 async function processConversation(job: ConversationProcessJob) {
   const { tenantId, conversationId, messageId } = job;
@@ -86,6 +92,8 @@ async function processConversation(job: ConversationProcessJob) {
       slots: (conversation.slots ?? {}) as Record<string, unknown>,
       industry,
       requireQuoteApproval: Boolean(settings.requireQuoteApproval),
+      llm,
+      businessName: conversation.tenant.name,
       tools: {
         searchCatalog: (hints) => searchCatalogForTenant(tenantId, hints),
         createQuote: async (input) => {
