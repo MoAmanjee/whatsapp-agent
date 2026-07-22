@@ -1,0 +1,23 @@
+{
+  "name": "autoquoteai",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @autoquoteai/db generate",
+    "db:migrate": "pnpm --filter @autoquoteai/db migrate",
+    "db:studio": "pnpm --filter @autoquoteai/db studio",
+    "bootstrap:home": "powershell -ExecutionPolicy Bypass -File ./scripts/bootstrap-home.ps1"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}

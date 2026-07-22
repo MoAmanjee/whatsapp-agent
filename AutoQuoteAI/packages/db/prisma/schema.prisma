@@ -1,0 +1,448 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  SALES
+  VIEWER
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  INCOMPLETE
+  UNPAID
+}
+
+enum ConversationStatus {
+  AI_ACTIVE
+  AWAITING_CUSTOMER
+  AWAITING_APPROVAL
+  HUMAN_TAKEOVER
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  RECEIVED
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum QuoteStatus {
+  DRAFT
+  PENDING_APPROVAL
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+enum AiRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model Tenant {
+  id           String       @id @default(uuid()) @db.Uuid
+  name         String
+  slug         String       @unique
+  industryKey  String       @map("industry_key")
+  status       TenantStatus @default(TRIALING)
+  timezone     String       @default("Africa/Johannesburg")
+  currency     String       @default("ZAR") @db.Char(3)
+  locale       String       @default("en-ZA")
+  settings     Json         @default("{}")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  memberships       Membership[]
+  subscription      Subscription?
+  whatsappAccounts  WhatsappAccount[]
+  contacts          Contact[]
+  conversations     Conversation[]
+  products          CatalogProduct[]
+  quotes            Quote[]
+  aiRuns            AiRun[]
+  apiKeys           ApiKey[]
+  auditLogs         AuditLog[]
+  autoFitments      AutoFitment[]
+  autoOemNumbers    AutoOemNumber[]
+  autoVehicles      AutoVehicle[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  name         String?
+  passwordHash String?   @map("password_hash")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  memberships Membership[]
+  sessions    Session[]
+  auditLogs   AuditLog[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Membership {
+  id        String         @id @default(uuid()) @db.Uuid
+  tenantId  String         @map("tenant_id") @db.Uuid
+  userId    String         @map("user_id") @db.Uuid
+  role      MembershipRole @default(SALES)
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("memberships")
+}
+
+model Subscription {
+  id                   String             @id @default(uuid()) @db.Uuid
+  tenantId             String             @unique @map("tenant_id") @db.Uuid
+  provider             String             @default("stripe")
+  providerCustomerId   String?            @map("provider_customer_id")
+  providerSubscriptionId String?          @map("provider_subscription_id")
+  planKey              String             @default("starter") @map("plan_key")
+  status               SubscriptionStatus @default(TRIALING)
+  currentPeriodEnd     DateTime?          @map("current_period_end")
+  cancelAtPeriodEnd    Boolean            @default(false) @map("cancel_at_period_end")
+  entitlements         Json               @default("{}")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model WhatsappAccount {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  wabaId          String?  @map("waba_id")
+  phoneNumberId   String   @map("phone_number_id")
+  displayNumber   String?  @map("display_number")
+  accessTokenEnc  String   @map("access_token_enc")
+  qualityRating   String?  @map("quality_rating")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@unique([tenantId, phoneNumberId])
+  @@index([phoneNumberId])
+  @@map("whatsapp_accounts")
+}
+
+model Contact {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  waId            String   @map("wa_id")
+  profileName     String?  @map("profile_name")
+  phoneE164       String?  @map("phone_e164")
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  quotes        Quote[]
+
+  @@unique([tenantId, waId])
+  @@index([tenantId, phoneE164])
+  @@map("contacts")
+}
+
+model Conversation {
+  id                String             @id @default(uuid()) @db.Uuid
+  tenantId          String             @map("tenant_id") @db.Uuid
+  contactId         String             @map("contact_id") @db.Uuid
+  whatsappAccountId String             @map("whatsapp_account_id") @db.Uuid
+  status            ConversationStatus @default(AI_ACTIVE)
+  slots             Json               @default("{}")
+  lastMessageAt     DateTime?          @map("last_message_at")
+  takenOverByUserId String?            @map("taken_over_by_user_id") @db.Uuid
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact         Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  whatsappAccount WhatsappAccount @relation(fields: [whatsappAccountId], references: [id], onDelete: Cascade)
+  messages        Message[]
+  quotes          Quote[]
+  aiRuns          AiRun[]
+
+  @@unique([tenantId, contactId, whatsappAccountId])
+  @@index([tenantId, status, lastMessageAt])
+  @@map("conversations")
+}
+
+model Message {
+  id             String           @id @default(uuid()) @db.Uuid
+  tenantId       String           @map("tenant_id") @db.Uuid
+  conversationId String           @map("conversation_id") @db.Uuid
+  direction      MessageDirection
+  status         MessageStatus    @default(RECEIVED)
+  waMessageId    String?          @unique @map("wa_message_id")
+  bodyText       String?          @map("body_text")
+  mediaUrl       String?          @map("media_url")
+  payload        Json             @default("{}")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, conversationId, createdAt])
+  @@map("messages")
+}
+
+model CatalogProduct {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  sku         String
+  name        String
+  description String?
+  brand       String?
+  category    String?
+  attributes  Json     @default("{}")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  variants CatalogVariant[]
+  fitments AutoFitment[]
+  oemNumbers AutoOemNumber[]
+  quoteLines QuoteLine[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, name])
+  @@map("catalog_products")
+}
+
+model CatalogVariant {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  productId   String   @map("product_id") @db.Uuid
+  sku         String
+  priceCents  Int      @map("price_cents")
+  currency    String   @default("ZAR") @db.Char(3)
+  stockQty    Int      @default(0) @map("stock_qty")
+  attributes  Json     @default("{}")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  product    CatalogProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quoteLines QuoteLine[]
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, productId])
+  @@map("catalog_variants")
+}
+
+model Quote {
+  id             String      @id @default(uuid()) @db.Uuid
+  tenantId       String      @map("tenant_id") @db.Uuid
+  contactId      String      @map("contact_id") @db.Uuid
+  conversationId String?     @map("conversation_id") @db.Uuid
+  number         String
+  status         QuoteStatus @default(DRAFT)
+  currency       String      @default("ZAR") @db.Char(3)
+  subtotalCents  Int         @default(0) @map("subtotal_cents")
+  taxCents       Int         @default(0) @map("tax_cents")
+  totalCents     Int         @default(0) @map("total_cents")
+  notes          String?
+  pdfObjectKey   String?     @map("pdf_object_key")
+  validUntil     DateTime?   @map("valid_until")
+  sentAt         DateTime?   @map("sent_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contact      Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  lines        QuoteLine[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status, createdAt])
+  @@map("quotes")
+}
+
+model QuoteLine {
+  id          String  @id @default(uuid()) @db.Uuid
+  tenantId    String  @map("tenant_id") @db.Uuid
+  quoteId     String  @map("quote_id") @db.Uuid
+  productId   String? @map("product_id") @db.Uuid
+  variantId   String? @map("variant_id") @db.Uuid
+  description String
+  quantity    Int     @default(1)
+  unitCents   Int     @map("unit_cents")
+  totalCents  Int     @map("total_cents")
+  metadata    Json    @default("{}")
+
+  quote   Quote           @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  product CatalogProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variant CatalogVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, quoteId])
+  @@map("quote_lines")
+}
+
+model AiRun {
+  id             String      @id @default(uuid()) @db.Uuid
+  tenantId       String      @map("tenant_id") @db.Uuid
+  conversationId String?     @map("conversation_id") @db.Uuid
+  status         AiRunStatus @default(RUNNING)
+  workflowKey    String      @map("workflow_key")
+  input          Json        @default("{}")
+  output         Json        @default("{}")
+  trace          Json        @default("[]")
+  errorMessage   String?     @map("error_message")
+  tokensIn       Int         @default(0) @map("tokens_in")
+  tokensOut      Int         @default(0) @map("tokens_out")
+  startedAt      DateTime    @default(now()) @map("started_at")
+  finishedAt     DateTime?   @map("finished_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, startedAt])
+  @@map("ai_runs")
+}
+
+model ApiKey {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  name       String
+  keyPrefix  String    @map("key_prefix")
+  keyHash    String    @map("key_hash")
+  scopes     String[]  @default([])
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, keyPrefix])
+  @@map("api_keys")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  action    String
+  resource  String?
+  metadata  Json     @default("{}")
+  ip        String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+/// Automotive plugin: vehicle identity
+model AutoVehicle {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  year      Int
+  make      String
+  model     String
+  engine    String?
+  trim      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fitments AutoFitment[]
+
+  @@index([tenantId, year, make, model])
+  @@map("auto_vehicles")
+}
+
+/// Automotive plugin: product ↔ vehicle fitment
+model AutoFitment {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  vehicleId String   @map("vehicle_id") @db.Uuid
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product CatalogProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  vehicle AutoVehicle    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, productId, vehicleId])
+  @@map("auto_fitments")
+}
+
+/// Automotive plugin: OEM / interchange numbers
+model AutoOemNumber {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  oemNumber String   @map("oem_number")
+  brand     String?
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product CatalogProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, oemNumber, productId])
+  @@index([tenantId, oemNumber])
+  @@map("auto_oem_numbers")
+}

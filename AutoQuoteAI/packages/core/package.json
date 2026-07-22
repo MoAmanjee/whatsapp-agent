@@ -1,0 +1,32 @@
+{
+  "name": "@autoquoteai/core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@autoquoteai/db": "workspace:*",
+    "@autoquoteai/shared": "workspace:*",
+    "@autoquoteai/industry-sdk": "workspace:*",
+    "@autoquoteai/industry-automotive": "workspace:*",
+    "@autoquoteai/industry-generic": "workspace:*",
+    "@autoquoteai/ai": "workspace:*",
+    "bcryptjs": "^2.4.3",
+    "nanoid": "^5.0.9"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "typescript": "^5.7.2"
+  }
+}
