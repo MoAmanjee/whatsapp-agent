@@ -38,8 +38,12 @@ import { createBillingProvider } from "@autoquoteai/billing";
 import { getIndustry, listIndustries } from "@autoquoteai/industry-sdk";
 import { renderQuoteHtml } from "@autoquoteai/quotes";
 import { Queue } from "bullmq";
-import IORedis from "ioredis";
+import { Redis as IORedis } from "ioredis";
 import { z } from "zod";
+
+function toJson(value: unknown) {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
 
 registerAllIndustries();
 
@@ -770,7 +774,7 @@ async function buildServer() {
             ...(msg.interactive ? { interactive: msg.interactive } : {}),
             ...(msg.location ? { location: msg.location } : {}),
             ...(msg.contextMessageId ? { replyTo: msg.contextMessageId } : {}),
-            raw: msg.raw,
+            raw: toJson(msg.raw),
           },
         },
       });

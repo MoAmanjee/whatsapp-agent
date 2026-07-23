@@ -13,7 +13,7 @@ for (const p of [
 }
 
 import { Worker } from "bullmq";
-import IORedis from "ioredis";
+import { Redis as IORedis } from "ioredis";
 import { prisma } from "@autoquoteai/db";
 import {
   QUEUE_NAMES,
@@ -33,6 +33,10 @@ import {
   formatQuoteWhatsappText,
   writeQuoteDocument,
 } from "@autoquoteai/quotes";
+
+function toJson(value: unknown) {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
 
 registerAllIndustries();
 
@@ -133,7 +137,7 @@ async function processConversation(job: ConversationProcessJob) {
     await prisma.conversation.update({
       where: { id: conversationId },
       data: {
-        slots: result.slots,
+        slots: toJson(result.slots),
         status:
           result.action === "escalated"
             ? "HUMAN_TAKEOVER"
@@ -174,8 +178,8 @@ async function processConversation(job: ConversationProcessJob) {
       where: { id: aiRun.id },
       data: {
         status: "SUCCEEDED",
-        output: result,
-        trace: result.trace,
+        output: toJson(result),
+        trace: toJson(result.trace),
         finishedAt: new Date(),
       },
     });
