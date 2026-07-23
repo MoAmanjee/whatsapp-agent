@@ -413,7 +413,7 @@ async function buildServer() {
         conversationId: conversation.id,
         messageId: saved.id,
       },
-      { removeOnComplete: 1000, removeOnFail: 5000, jobId: `msg:${waMessageId}` },
+      { removeOnComplete: 1000, removeOnFail: 5000, jobId: `msg-${waMessageId.replace(/[^a-zA-Z0-9_-]/g, "_")}` },
     );
 
     return { ok: true, conversationId: conversation.id, messageId: saved.id };
@@ -542,7 +542,7 @@ async function buildServer() {
     await quoteSendQueue.add(
       "send",
       { tenantId, quoteId },
-      { removeOnComplete: 1000, jobId: `quote-send:${quoteId}` },
+      { removeOnComplete: 1000, jobId: `quote-send-${quoteId}` },
     );
     return { queued: true, quoteId };
   });
@@ -785,7 +785,7 @@ async function buildServer() {
         {
           removeOnComplete: 1000,
           removeOnFail: 5000,
-          jobId: `msg:${msg.waMessageId}`,
+          jobId: `msg-${msg.waMessageId.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
         },
       );
     }

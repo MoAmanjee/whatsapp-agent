@@ -17,6 +17,7 @@
     "bootstrap:home": "powershell -ExecutionPolicy Bypass -File ./scripts/bootstrap-home.ps1"
   },
   "devDependencies": {
+    "@types/node": "^22.10.2",
     "turbo": "^2.3.3",
     "typescript": "^5.7.2"
   }
