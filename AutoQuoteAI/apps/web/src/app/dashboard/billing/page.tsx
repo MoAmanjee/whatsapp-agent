@@ -44,6 +44,19 @@ export default function BillingPage() {
     }
   }
 
+  async function openPortal() {
+    if (!tenantId) return;
+    try {
+      const res = await api<{ url: string }>(
+        `/v1/tenants/${tenantId}/billing/portal`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      window.location.href = res.url;
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Portal unavailable");
+    }
+  }
+
   return (
     <DashboardShell businessName={businessName}>
       <h1 style={{ marginTop: 0 }}>Billing</h1>
@@ -62,6 +75,9 @@ export default function BillingPage() {
           </button>
           <button className="btn btn-ghost" type="button" onClick={() => checkout("scale")}>
             Scale
+          </button>
+          <button className="btn btn-ghost" type="button" onClick={openPortal}>
+            Customer portal
           </button>
         </div>
         {message ? <p className="muted">{message}</p> : null}

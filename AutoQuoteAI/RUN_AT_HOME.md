@@ -9,7 +9,18 @@ This folder is a **portable personal project**. Copy the entire `AutoQuoteAI` fo
 3. **Docker Desktop** — https://www.docker.com/products/docker-desktop/
 4. **Git** (optional but recommended)
 
-## One-command bootstrap (Windows PowerShell)
+## One-command bootstrap
+
+**macOS / Linux:**
+
+```bash
+cd path/to/AutoQuoteAI
+chmod +x scripts/bootstrap-home.sh
+./scripts/bootstrap-home.sh
+# or: pnpm bootstrap:unix
+```
+
+**Windows PowerShell:**
 
 ```powershell
 cd path\to\AutoQuoteAI
@@ -19,10 +30,11 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 That script will:
 
-- copy `.env.example` → `.env` if missing
+- copy `.env.example` → `.env` if missing (and generate secrets on Unix)
 - `pnpm install`
 - start Postgres / Redis / MinIO via Docker
 - generate Prisma client + run migrations
+- build workspace packages
 - print how to start the apps
 
 ## Start the product

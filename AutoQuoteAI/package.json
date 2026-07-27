@@ -11,10 +11,12 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "postinstall": "pnpm db:generate || true",
     "db:generate": "pnpm --filter @autoquoteai/db generate",
     "db:migrate": "pnpm --filter @autoquoteai/db migrate",
     "db:studio": "pnpm --filter @autoquoteai/db studio",
-    "bootstrap:home": "powershell -ExecutionPolicy Bypass -File ./scripts/bootstrap-home.ps1"
+    "bootstrap:home": "powershell -ExecutionPolicy Bypass -File ./scripts/bootstrap-home.ps1",
+    "bootstrap:unix": "bash ./scripts/bootstrap-home.sh"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

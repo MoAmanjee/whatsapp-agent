@@ -33,8 +33,18 @@ docker compose version
 
 ## 4. Bootstrap this project
 
+**macOS / Linux:**
+
+```bash
+cd AutoQuoteAI
+./scripts/bootstrap-home.sh
+pnpm dev
+```
+
+**Windows PowerShell:**
+
 ```powershell
-cd C:\Users\mohammed.amanjee\AutoQuoteAI
+cd path\to\AutoQuoteAI
 Copy-Item .env.example .env
 # Edit .env — set AUTH_SECRET to a long random string
 pnpm install
@@ -43,6 +53,9 @@ pnpm db:generate
 pnpm db:migrate
 pnpm dev
 ```
+
+If port `5432` is already used by another Postgres install, change the host mapping in
+`docker-compose.yml` (e.g. `"5433:5432"`) and set `DATABASE_URL` accordingly.
 
 Optional RLS hardening (after migrate, if `psql` is available):
 

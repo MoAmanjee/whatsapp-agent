@@ -23,15 +23,19 @@ import {
   PLANS,
 } from "@autoquoteai/shared";
 import {
+  activateStubSubscription,
   authenticate,
   assertMembership,
   connectWhatsappAccount,
   createSession,
+  importCatalogCsv,
   resolveSession,
   resolveWhatsappAccessToken,
+  revokeSession,
   seedDemoCatalog,
   signUp,
   registerAllIndustries,
+  writeAuditLog,
 } from "@autoquoteai/core";
 import { createWhatsappProvider, verifyMetaSignature } from "@autoquoteai/whatsapp";
 import { createBillingProvider } from "@autoquoteai/billing";
@@ -183,7 +187,9 @@ async function buildServer() {
     return { user: { id: user.id, email: user.email, name: user.name } };
   });
 
-  app.post("/v1/auth/logout", async (_req, reply) => {
+  app.post("/v1/auth/logout", async (req, reply) => {
+    const token = req.cookies[SESSION_COOKIE];
+    if (token) await revokeSession(token);
     reply.clearCookie(SESSION_COOKIE, { path: "/" });
     return { ok: true };
   });
@@ -275,7 +281,7 @@ async function buildServer() {
       })
       .parse(req.body);
 
-    return prisma.catalogProduct.create({
+    const product = await prisma.catalogProduct.create({
       data: {
         tenantId,
         sku: body.sku,
@@ -303,6 +309,28 @@ async function buildServer() {
       },
       include: { variants: true, oemNumbers: true },
     });
+    await writeAuditLog({
+      tenantId,
+      userId: user.id,
+      action: "catalog.product_create",
+      resource: product.id,
+    });
+    return product;
+  });
+
+  app.post("/v1/tenants/:tenantId/catalog/import", async (req) => {
+    const user = requireUser(req as { user?: AuthedUser | null });
+    const { tenantId } = req.params as { tenantId: string };
+    await assertMembership(user.id, tenantId, "catalog:write");
+    const body = z.object({ csv: z.string().min(1) }).parse(req.body);
+    const result = await importCatalogCsv(tenantId, body.csv);
+    await writeAuditLog({
+      tenantId,
+      userId: user.id,
+      action: "catalog.import",
+      metadata: { created: result.created, skipped: result.skipped },
+    });
+    return result;
   });
 
   // --- WhatsApp connect ---
@@ -595,9 +623,55 @@ async function buildServer() {
       tenantId,
       planKey: body.planKey,
       customerEmail: user.email,
-      successUrl: `${WEB_URL}/billing/success`,
+      successUrl: `${WEB_URL}/billing/success?tenantId=${tenantId}&plan=${body.planKey}`,
       cancelUrl: `${WEB_URL}/dashboard/billing`,
       stripeCustomerId: sub?.providerCustomerId ?? undefined,
+    });
+  });
+
+  app.post("/v1/tenants/:tenantId/billing/portal", async (req) => {
+    const user = requireUser(req as { user?: AuthedUser | null });
+    const { tenantId } = req.params as { tenantId: string };
+    await assertMembership(user.id, tenantId, "billing:manage");
+    const sub = await prisma.subscription.findUnique({ where: { tenantId } });
+    if (!sub?.providerCustomerId) {
+      throw new AppError("billing_no_customer", "No billing customer yet — checkout first", 400);
+    }
+    return billing.createPortalSession({
+      stripeCustomerId: sub.providerCustomerId,
+      returnUrl: `${WEB_URL}/dashboard/billing`,
+    });
+  });
+
+  /** Offline stub: mark subscription active after stub checkout redirect. */
+  app.post("/v1/tenants/:tenantId/billing/activate-stub", async (req) => {
+    const user = requireUser(req as { user?: AuthedUser | null });
+    const { tenantId } = req.params as { tenantId: string };
+    await assertMembership(user.id, tenantId, "billing:manage");
+    if (process.env.STRIPE_SECRET_KEY) {
+      throw new AppError("billing_live", "Stub activation disabled when Stripe is configured", 400);
+    }
+    const body = z
+      .object({ planKey: z.enum(["starter", "growth", "scale"]).default("starter") })
+      .parse(req.body ?? {});
+    const sub = await activateStubSubscription(tenantId, body.planKey);
+    await writeAuditLog({
+      tenantId,
+      userId: user.id,
+      action: "billing.stub_activate",
+      metadata: { planKey: body.planKey },
+    });
+    return sub;
+  });
+
+  app.get("/v1/tenants/:tenantId/ai-runs", async (req) => {
+    const user = requireUser(req as { user?: AuthedUser | null });
+    const { tenantId } = req.params as { tenantId: string };
+    await assertMembership(user.id, tenantId, "ai:configure");
+    return prisma.aiRun.findMany({
+      where: { tenantId },
+      orderBy: { startedAt: "desc" },
+      take: 50,
     });
   });
 
@@ -607,7 +681,8 @@ async function buildServer() {
     }
     const sig = req.headers["stripe-signature"] as string | undefined;
     if (!sig) throw new AppError("invalid_signature", "Missing Stripe signature", 400);
-    const raw = Buffer.from(JSON.stringify(req.body));
+    const rawBody = (req as { rawBody?: string }).rawBody;
+    const raw = Buffer.from(rawBody ?? JSON.stringify(req.body));
     const event = billing.constructWebhookEvent(raw, sig);
 
     if (

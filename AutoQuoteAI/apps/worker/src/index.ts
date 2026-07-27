@@ -12,7 +12,7 @@ for (const p of [
   }
 }
 
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import { Redis as IORedis } from "ioredis";
 import { prisma } from "@autoquoteai/db";
 import {
@@ -21,6 +21,7 @@ import {
   type QuoteSendJob,
 } from "@autoquoteai/shared";
 import {
+  assertConversationEntitlement,
   createQuoteDraft,
   registerAllIndustries,
   resolveWhatsappAccessToken,
@@ -44,6 +45,7 @@ const connection = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379"
   maxRetriesPerRequest: null,
 });
 
+const quoteSendQueue = new Queue(QUEUE_NAMES.quoteSend, { connection });
 const whatsapp = createWhatsappProvider();
 const llm = createLlm();
 if (llm) {
@@ -68,6 +70,26 @@ async function processConversation(job: ConversationProcessJob) {
     return { skipped: true, reason: conversation.status };
   }
 
+  try {
+    await assertConversationEntitlement(tenantId);
+  } catch (err) {
+    const accessToken = resolveWhatsappAccessToken(
+      conversation.whatsappAccount.accessTokenEnc,
+    );
+    const body =
+      err instanceof Error
+        ? err.message
+        : "Billing limit reached — please upgrade in the dashboard.";
+    await whatsapp.sendText(
+      {
+        accessToken,
+        phoneNumberId: conversation.whatsappAccount.phoneNumberId,
+      },
+      { toWaId: conversation.contact.waId, body },
+    );
+    return { skipped: true, reason: "entitlement" };
+  }
+
   const message = await prisma.message.findFirstOrThrow({
     where: { id: messageId, tenantId },
   });
@@ -88,6 +110,24 @@ async function processConversation(job: ConversationProcessJob) {
   });
 
   try {
+    const accessToken = resolveWhatsappAccessToken(
+      conversation.whatsappAccount.accessTokenEnc,
+    );
+
+    if (message.waMessageId && !message.waMessageId.startsWith("demo_")) {
+      try {
+        await whatsapp.markAsRead(
+          {
+            accessToken,
+            phoneNumberId: conversation.whatsappAccount.phoneNumberId,
+          },
+          message.waMessageId,
+        );
+      } catch {
+        /* non-fatal */
+      }
+    }
+
     const result = await runQuoteSalesWorkflow({
       tenantId,
       currency: conversation.tenant.currency,
@@ -127,9 +167,16 @@ async function processConversation(job: ConversationProcessJob) {
             where: { id: conversationId },
             data: {
               status: "HUMAN_TAKEOVER",
-              slots: { ...prev, escalateReason: reason },
+              slots: toJson({ ...prev, escalateReason: reason }),
             },
           });
+        },
+        sendQuote: async (quoteId) => {
+          await quoteSendQueue.add(
+            "send",
+            { tenantId, quoteId },
+            { removeOnComplete: 1000, jobId: `quote-send-${quoteId}` },
+          );
         },
       },
     });
@@ -146,10 +193,6 @@ async function processConversation(job: ConversationProcessJob) {
               : "AI_ACTIVE",
       },
     });
-
-    const accessToken = resolveWhatsappAccessToken(
-      conversation.whatsappAccount.accessTokenEnc,
-    );
 
     const sent = await whatsapp.sendText(
       {

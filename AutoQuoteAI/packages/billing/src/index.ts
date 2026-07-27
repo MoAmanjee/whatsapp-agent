@@ -91,11 +91,21 @@ export class StripeBillingProvider implements BillingProvider {
   }
 }
 
+function withQuery(url: string, params: Record<string, string>): string {
+  const u = new URL(url);
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return u.toString();
+}
+
 /** Local/dev provider — no Stripe network calls */
 export class StubBillingProvider implements BillingProvider {
   async createCheckoutSession(input: CheckoutInput): Promise<{ url: string }> {
     return {
-      url: `${input.successUrl}?stub_checkout=1&tenantId=${input.tenantId}&plan=${input.planKey}`,
+      url: withQuery(input.successUrl, {
+        stub_checkout: "1",
+        tenantId: input.tenantId,
+        plan: input.planKey,
+      }),
     };
   }
 
@@ -103,7 +113,12 @@ export class StubBillingProvider implements BillingProvider {
     stripeCustomerId: string;
     returnUrl: string;
   }): Promise<{ url: string }> {
-    return { url: `${input.returnUrl}?stub_portal=1&customer=${input.stripeCustomerId}` };
+    return {
+      url: withQuery(input.returnUrl, {
+        stub_portal: "1",
+        customer: input.stripeCustomerId,
+      }),
+    };
   }
 
   constructWebhookEvent(_rawBody: Buffer, _signature: string): Stripe.Event {

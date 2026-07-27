@@ -22,6 +22,7 @@ export default function CatalogPage() {
   const [businessName, setBusinessName] = useState<string>();
   const [products, setProducts] = useState<Product[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
 
   async function load(tid: string) {
     const list = await api<Product[]>(`/v1/tenants/${tid}/products`);
@@ -66,9 +67,49 @@ export default function CatalogPage() {
     }
   }
 
+  async function onImport(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!tenantId) return;
+    setImportMsg(null);
+    const fd = new FormData(e.currentTarget);
+    const file = fd.get("csv") as File | null;
+    if (!file) return;
+    const csv = await file.text();
+    try {
+      const res = await api<{ created: number; skipped: number; errors: string[] }>(
+        `/v1/tenants/${tenantId}/catalog/import`,
+        { method: "POST", body: JSON.stringify({ csv }) },
+      );
+      setImportMsg(
+        `Imported ${res.created} row(s), skipped ${res.skipped}` +
+          (res.errors[0] ? ` — ${res.errors[0]}` : ""),
+      );
+      await load(tenantId);
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "Import failed");
+    }
+  }
+
   return (
     <DashboardShell businessName={businessName}>
       <h1 style={{ marginTop: 0 }}>Catalog</h1>
+      <div className="panel" style={{ marginBottom: "1rem" }}>
+        <h2>CSV import</h2>
+        <p className="muted">
+          Header required: <code>sku,name,price</code> — optional{" "}
+          <code>stock,brand,description,oem,currency</code>
+        </p>
+        <form className="form" onSubmit={onImport}>
+          <label>
+            CSV file
+            <input name="csv" type="file" accept=".csv,text/csv" required />
+          </label>
+          <button className="btn btn-ghost" type="submit">
+            Import CSV
+          </button>
+          {importMsg ? <p className="muted">{importMsg}</p> : null}
+        </form>
+      </div>
       <div className="panel" style={{ marginBottom: "1rem" }}>
         <h2>Add product</h2>
         <form className="form" onSubmit={onSubmit}>

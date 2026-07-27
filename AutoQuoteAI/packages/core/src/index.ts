@@ -129,6 +129,12 @@ export async function resolveSession(token: string) {
   return session.user;
 }
 
+export async function revokeSession(token: string) {
+  await prisma.session.deleteMany({
+    where: { tokenHash: hashToken(token) },
+  });
+}
+
 export function hasPermission(
   role: keyof typeof MEMBERSHIP_PERMISSIONS,
   permission: Permission,
@@ -188,6 +194,50 @@ export async function searchCatalogForTenant(
       }
     }
 
+    const year = typeof hint.filters?.year === "number" ? hint.filters.year : null;
+    const make = typeof hint.filters?.make === "string" ? hint.filters.make : null;
+    const model = typeof hint.filters?.model === "string" ? hint.filters.model : null;
+    if (year || make || model) {
+      const vehicles = await prisma.autoVehicle.findMany({
+        where: {
+          tenantId,
+          ...(year ? { year } : {}),
+          ...(make ? { make: { equals: make, mode: "insensitive" } } : {}),
+          ...(model ? { model: { equals: model, mode: "insensitive" } } : {}),
+        },
+        take: 20,
+      });
+      if (vehicles.length > 0) {
+        const fitments = await prisma.autoFitment.findMany({
+          where: {
+            tenantId,
+            vehicleId: { in: vehicles.map((v) => v.id) },
+          },
+          include: {
+            product: {
+              include: { variants: { where: { isActive: true }, take: 1 } },
+            },
+          },
+          take: 20,
+        });
+        for (const fit of fitments) {
+          if (!fit.product.isActive) continue;
+          const variant = fit.product.variants[0];
+          const vehicleLabel = [year, make, model].filter(Boolean).join(" ");
+          results.push({
+            productId: fit.product.id,
+            variantId: variant?.id,
+            sku: fit.product.sku,
+            name: fit.product.name,
+            priceCents: variant?.priceCents ?? 0,
+            stockQty: variant?.stockQty ?? 0,
+            score: 0.95,
+            reason: `fitment ${vehicleLabel}`.trim(),
+          });
+        }
+      }
+    }
+
     const products = await prisma.catalogProduct.findMany({
       where: {
         tenantId,
@@ -223,6 +273,233 @@ export async function searchCatalogForTenant(
     if (!prev || r.score > prev.score) dedup.set(r.productId, r);
   }
   return [...dedup.values()].sort((a, b) => b.score - a.score);
+}
+
+export async function importCatalogCsv(
+  tenantId: string,
+  csvText: string,
+): Promise<{ created: number; skipped: number; errors: string[] }> {
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return { created: 0, skipped: 0, errors: ["Empty CSV"] };
+  }
+
+  const header = lines[0]!.toLowerCase().split(",").map((h) => h.trim());
+  const idx = (name: string) => header.indexOf(name);
+  const skuI = idx("sku");
+  const nameI = idx("name");
+  const priceI = idx("price");
+  if (skuI < 0 || nameI < 0 || priceI < 0) {
+    return {
+      created: 0,
+      skipped: 0,
+      errors: ["CSV header must include: sku,name,price (optional: stock,brand,description,oem,currency)"],
+    };
+  }
+  const stockI = idx("stock");
+  const brandI = idx("brand");
+  const descI = idx("description");
+  const oemI = idx("oem");
+  const currencyI = idx("currency");
+
+  let created = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCsvLine(lines[i]!);
+    const sku = cols[skuI]?.trim();
+    const name = cols[nameI]?.trim();
+    const priceRaw = cols[priceI]?.trim();
+    if (!sku || !name || !priceRaw) {
+      skipped += 1;
+      errors.push(`Row ${i + 1}: missing sku/name/price`);
+      continue;
+    }
+    const priceNum = Number(priceRaw.replace(/[^0-9.]/g, ""));
+    if (!Number.isFinite(priceNum)) {
+      skipped += 1;
+      errors.push(`Row ${i + 1}: invalid price`);
+      continue;
+    }
+    const priceCents = Math.round(priceNum * (priceRaw.includes(".") || priceNum < 1000 ? 100 : 1));
+    const stockQty = stockI >= 0 ? Math.max(0, Number(cols[stockI] ?? 0) || 0) : 0;
+    const currency = (currencyI >= 0 ? cols[currencyI]?.trim() : undefined) || "ZAR";
+    const brand = brandI >= 0 ? cols[brandI]?.trim() : undefined;
+    const description = descI >= 0 ? cols[descI]?.trim() : undefined;
+    const oemNumber = oemI >= 0 ? cols[oemI]?.trim() : undefined;
+
+    try {
+      const product = await prisma.catalogProduct.upsert({
+        where: { tenantId_sku: { tenantId, sku } },
+        create: {
+          tenantId,
+          sku,
+          name,
+          brand,
+          description,
+        },
+        update: {
+          name,
+          brand,
+          description,
+          isActive: true,
+        },
+      });
+      await prisma.catalogVariant.upsert({
+        where: { tenantId_sku: { tenantId, sku: `${sku}-DEFAULT` } },
+        create: {
+          tenantId,
+          productId: product.id,
+          sku: `${sku}-DEFAULT`,
+          priceCents,
+          stockQty,
+          currency,
+        },
+        update: { priceCents, stockQty, currency, isActive: true },
+      });
+      if (oemNumber) {
+        await prisma.autoOemNumber.upsert({
+          where: {
+            tenantId_oemNumber_productId: {
+              tenantId,
+              oemNumber,
+              productId: product.id,
+            },
+          },
+          create: {
+            tenantId,
+            productId: product.id,
+            oemNumber,
+            isPrimary: true,
+          },
+          update: { isPrimary: true },
+        });
+      }
+      created += 1;
+    } catch (err) {
+      skipped += 1;
+      errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return { created, skipped, errors: errors.slice(0, 20) };
+}
+
+function splitCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+export async function activateStubSubscription(
+  tenantId: string,
+  planKey: "starter" | "growth" | "scale",
+) {
+  const planEntitlements: Record<
+    "starter" | "growth" | "scale",
+    { conversationsPerMonth: number; whatsappNumbers: number; seats: number; features: string[] }
+  > = {
+    starter: {
+      conversationsPerMonth: 500,
+      whatsappNumbers: 1,
+      seats: 1,
+      features: ["quotes", "catalog", "ai_agent"],
+    },
+    growth: {
+      conversationsPerMonth: 3000,
+      whatsappNumbers: 1,
+      seats: 5,
+      features: ["quotes", "catalog", "ai_agent", "approvals", "csv_import"],
+    },
+    scale: {
+      conversationsPerMonth: 20000,
+      whatsappNumbers: 5,
+      seats: 25,
+      features: ["quotes", "catalog", "ai_agent", "approvals", "csv_import", "api_access"],
+    },
+  };
+  const plan = planEntitlements[planKey];
+  return prisma.subscription.update({
+    where: { tenantId },
+    data: {
+      planKey,
+      status: "ACTIVE",
+      providerCustomerId: `stub_cus_${tenantId.slice(0, 8)}`,
+      providerSubscriptionId: `stub_sub_${planKey}_${Date.now()}`,
+      entitlements: JSON.parse(JSON.stringify(plan)),
+    },
+  });
+}
+
+export async function assertConversationEntitlement(tenantId: string) {
+  const sub = await prisma.subscription.findUnique({ where: { tenantId } });
+  if (!sub) return;
+  if (sub.status === "CANCELLED" || sub.status === "UNPAID") {
+    throw new AppError(
+      "subscription_inactive",
+      "Subscription is inactive — update billing to continue AI conversations",
+      402,
+    );
+  }
+  const entitlements = (sub.entitlements ?? {}) as {
+    conversationsPerMonth?: number;
+  };
+  const cap = entitlements.conversationsPerMonth ?? 500;
+  const start = new Date();
+  start.setUTCDate(1);
+  start.setUTCHours(0, 0, 0, 0);
+  const used = await prisma.aiRun.count({
+    where: { tenantId, startedAt: { gte: start } },
+  });
+  if (used >= cap) {
+    throw new AppError(
+      "conversation_cap",
+      `Monthly conversation cap (${cap}) reached for this plan`,
+      402,
+    );
+  }
+}
+
+export async function writeAuditLog(input: {
+  tenantId?: string;
+  userId?: string;
+  action: string;
+  resource?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  await prisma.auditLog.create({
+    data: {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      action: input.action,
+      resource: input.resource,
+      metadata: JSON.parse(JSON.stringify(input.metadata ?? {})),
+    },
+  });
 }
 
 export async function createQuoteDraft(input: {
