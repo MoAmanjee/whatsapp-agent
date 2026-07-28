@@ -95,7 +95,8 @@ export async function runQuoteSalesWorkflow(
 
   trace.push({ step: "ingest", detail: { text: input.customerText } });
 
-  // If a quote was already drafted and customer confirms, send it.
+  // --- Confirmation handshake -------------------------------------------
+  // If a quote was already drafted and is waiting, act on the customer's reply.
   const pendingQuoteId =
     typeof slots.pendingQuoteId === "string" ? slots.pendingQuoteId : undefined;
   if (pendingQuoteId) {
@@ -119,13 +120,23 @@ export async function runQuoteSalesWorkflow(
       delete slots.pendingQuoteId;
       trace.push({ step: "send_quote_declined", detail: { quoteId: pendingQuoteId } });
       return {
-        replyText: "No problem — I won't send the formal quote. Tell me if you'd like a different part.",
+        replyText:
+          "No problem — I won't send the formal quote. Tell me if you'd like a different part.",
         slots,
         action: "ask_clarify",
         quoteId: pendingQuoteId,
         trace,
       };
     }
+    // Neither yes nor no while a quote is pending: re-prompt instead of re-drafting.
+    return {
+      replyText:
+        "I already have a quote ready for you. Reply **yes** to send the formal quote, or tell me what to change.",
+      slots,
+      action: "ask_clarify",
+      quoteId: pendingQuoteId,
+      trace,
+    };
   }
 
   // Already sent a quote recently and no new part request — avoid re-drafting.
@@ -143,6 +154,7 @@ export async function runQuoteSalesWorkflow(
     };
   }
 
+  // --- Slot extraction ---------------------------------------------------
   if (input.llm) {
     // LLM-based structured extraction (prices/products are never requested).
     try {
@@ -176,47 +188,56 @@ export async function runQuoteSalesWorkflow(
     }
   }
 
-  if (!input.llm || Object.keys(slots).filter((k) => !["pendingQuoteId", "lastSentQuoteId"].includes(k)).length === 0) {
-    // Deterministic fallback: OEM-ish tokens + year + common makes/parts.
-    const oem = input.customerText.match(/\b([A-Z0-9]{5,}(?:-?[A-Z0-9]+)+)\b/i);
-    if (oem?.[1] && !slots.oemNumber) {
-      slots.oemNumber = oem[1].toUpperCase();
+  // Deterministic fallback. Ignore the control slots when deciding "is it empty?".
+  if (
+    !input.llm ||
+    Object.keys(slots).filter(
+      (k) => !["pendingQuoteId", "lastSentQuoteId"].includes(k),
+    ).length === 0
+  ) {
+    const text = input.customerText;
+
+    const oem = text.match(/\b(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9]{4,}(?:-[A-Z0-9]+)*\b/i);
+    if (oem?.[0] && !slots.oemNumber) {
+      slots.oemNumber = oem[0].toUpperCase();
       trace.push({ step: "extract_oem", detail: slots.oemNumber });
     }
-    const year = input.customerText.match(/\b(19|20)\d{2}\b/);
+
+    const year = text.match(/\b(19|20)\d{2}\b/);
     if (year?.[0] && !slots.year) {
       slots.year = Number(year[0]);
       trace.push({ step: "extract_year", detail: slots.year });
     }
-    const makeMatch = input.customerText.match(
+
+    const makeMatch = text.match(
       /\b(toyota|honda|bmw|vw|volkswagen|ford|nissan|mercedes|audi|hyundai|kia|mazda)\b/i,
     );
     if (makeMatch?.[1] && !slots.make) {
-      const raw = makeMatch[1].toLowerCase();
-      const makeMap: Record<string, string> = {
-        vw: "Volkswagen",
-        volkswagen: "Volkswagen",
-        bmw: "BMW",
-      };
-      slots.make = makeMap[raw] ?? raw[0]!.toUpperCase() + raw.slice(1);
+      const raw = makeMatch[1]!.toLowerCase();
+      const map: Record<string, string> = { vw: "Volkswagen", volkswagen: "Volkswagen", bmw: "BMW" };
+      slots.make = map[raw] ?? raw.charAt(0).toUpperCase() + raw.slice(1);
       trace.push({ step: "extract_make", detail: slots.make });
     }
-    const modelMatch = input.customerText.match(
+
+    const modelMatch = text.match(
       /\b(corolla|civic|golf|polo|ranger|hilux|i20|focus|a4|c-class)\b/i,
     );
     if (modelMatch?.[1] && !slots.model) {
-      slots.model = modelMatch[1][0]!.toUpperCase() + modelMatch[1].slice(1).toLowerCase();
+      const m = modelMatch[1]!;
+      slots.model = m.charAt(0).toUpperCase() + m.slice(1).toLowerCase();
       trace.push({ step: "extract_model", detail: slots.model });
     }
-    const partMatch = input.customerText.match(
-      /\b(oil filter|air filter|cabin filter|brake pads?|spark plugs?|filter|pads?)\b/i,
+
+    const partMatch = text.match(
+      /\b(oil filter|air filter|cabin filter|brake pads?|spark plugs?|clutch|battery|alternator|radiator|filter|pads?)\b/i,
     );
     if (partMatch?.[1] && !slots.partName) {
       slots.partName = partMatch[1];
       trace.push({ step: "extract_part", detail: slots.partName });
     }
-    if (!slots.partName && !slots.oemNumber && input.customerText.length < 120) {
-      slots.partName = input.customerText;
+
+    if (!slots.partName && !slots.make && !slots.year && !slots.oemNumber && text.length < 120) {
+      slots.partName = text;
     }
   }
 
@@ -238,18 +259,7 @@ export async function runQuoteSalesWorkflow(
     return { replyText, slots, action: "ask_clarify", trace };
   }
 
-  // Don't create another quote if one is already pending confirmation.
-  if (pendingQuoteId) {
-    return {
-      replyText:
-        "I already have a quote ready for you. Reply **yes** to send the formal quote, or tell me what to change.",
-      slots,
-      action: "ask_clarify",
-      quoteId: pendingQuoteId,
-      trace,
-    };
-  }
-
+  // --- Catalog match + draft --------------------------------------------
   const hints = await input.industry.enrichSearch(
     input.customerText,
     slots,
@@ -340,7 +350,7 @@ export async function runQuoteSalesWorkflow(
   );
 
   if (input.requireQuoteApproval) {
-    slots.pendingQuoteId = quote.quoteId;
+    // Needs internal sign-off first — do NOT let the customer's "yes" send it.
     return {
       replyText: `${presentation.customerSummary}\nQuote ${quote.number} is ready and pending internal approval. We'll send it shortly.`,
       slots,
@@ -350,10 +360,8 @@ export async function runQuoteSalesWorkflow(
     };
   }
 
-  // Auto-send when approval not required — still ask, but also support immediate send via tool.
+  // Draft held — remember it and wait for the customer to confirm with "yes".
   slots.pendingQuoteId = quote.quoteId;
-
-  // If tenant prefers instant send (no confirmation), tools.sendQuote can be called by worker policy.
   return {
     replyText: `${presentation.customerSummary}\nQuote ${quote.number}: ${(quote.totalCents / 100).toFixed(2)} ${input.currency}. Reply **yes** and I'll send the formal quote now.`,
     slots,

@@ -181,6 +181,8 @@ async function processConversation(job: ConversationProcessJob) {
       },
     });
 
+ console.log("[DEBUG] text:", JSON.stringify(message.bodyText), "slots:",
+JSON.stringify(result.slots), "reply:", result.replyText);
     await prisma.conversation.update({
       where: { id: conversationId },
       data: {

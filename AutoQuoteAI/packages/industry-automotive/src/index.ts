@@ -44,27 +44,28 @@ export const automotiveModule: IndustryModule = {
     const s = automotiveSlotsSchema.partial().parse(slots);
     const hints: SearchHint[] = [];
 
+    const vehicleFilters = {
+      ...(s.year ? { year: s.year } : {}),
+      ...(s.make ? { make: s.make } : {}),
+      ...(s.model ? { model: s.model } : {}),
+    };
+
     if (s.oemNumber) {
-      hints.push({
-        query: s.oemNumber,
-        filters: { oemNumber: s.oemNumber },
-      });
+      hints.push({ query: s.oemNumber, filters: { oemNumber: s.oemNumber } });
     }
 
-    const part = s.partName ?? customerText;
-    const vehicleBits = [s.year, s.make, s.model, s.engine]
-      .filter(Boolean)
-      .join(" ");
+    if (s.partName) {
+      hints.push({ query: s.partName, filters: vehicleFilters });
+    }
 
-    hints.push({
-      query: [part, vehicleBits].filter(Boolean).join(" ").trim(),
-      filters: {
-        ...(s.year ? { year: s.year } : {}),
-        ...(s.make ? { make: s.make } : {}),
-        ...(s.model ? { model: s.model } : {}),
-      },
-    });
+    if (s.partName && s.model) {
+      hints.push({ query: `${s.partName} ${s.model}`, filters: vehicleFilters });
+      hints.push({ query: s.model, filters: vehicleFilters });
+    }
 
+    if (hints.length === 0 && customerText.trim()) {
+      hints.push({ query: customerText.trim(), filters: {} });
+    }
     return hints;
   },
 
